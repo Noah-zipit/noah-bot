@@ -1,0 +1,14 @@
+node_modules/
+dist/
+sessions/
+.env
+*.log
+qr-capture.mjs
+data/
+.DS_Store
+sessions2/
+data2/
+ai-inbox.jsonl
+ai-outbox.jsonl
+tmp/
+logs/
