@@ -259,7 +259,7 @@ export default class Database {
       name,
       settings: {
         welcome: true,
-        goodbye: true,
+        goodbye: false,
         antiLink: false,
         antiSpam: false,
         nsfw: false,
