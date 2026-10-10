@@ -3,7 +3,7 @@ import type { ParsedMessage, CommandContext } from '../../core/types.js'
 import type { GroupParticipant } from '@whiskeysockets/baileys'
 import { displayUser } from '../../lib/jidUtils.js'
 
-const handler = async (m: ParsedMessage, { db }: CommandContext) => {
+const handler = async (m: ParsedMessage, { sock, db }: CommandContext) => {
   // Get target user (mentioned or self)
   let targetJid = m.sender
   if (m.mentionedJid.length > 0) {
@@ -43,8 +43,26 @@ ${premiumStatus}
     // Update last seen time
     await db.updateUser(m.sender, { 'stats.lastSeen': Date.now() })
 
+    // Fetch their full-size WhatsApp profile picture to send zoomed with
+    // the details. Falls back to text-only when they have no picture or it
+    // is not visible to the bot.
+    let pfp: Buffer | null = null
+    try {
+      const url = await sock.profilePictureUrl(targetJid, 'image')
+      if (url) {
+        const res = await fetch(url)
+        if (res.ok) pfp = Buffer.from(await res.arrayBuffer())
+      }
+    } catch {
+      // no picture available — text-only fallback below
+    }
+
     // Send profile
-    m.reply(profileText)
+    if (pfp) {
+      await sock.sendMessage(m.chat, { image: pfp, caption: profileText }, { quoted: m.message })
+    } else {
+      m.reply(profileText)
+    }
 
   } catch (error) {
     console.error('Error in profile command:', error)
