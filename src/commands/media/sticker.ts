@@ -1,10 +1,25 @@
 import { Sticker } from 'wa-sticker-formatter'
 import { fileTypeFromBuffer } from 'file-type'
-import { makeAnimatedSticker } from '../../lib/animatedSticker.js'
+import { makeAnimatedSticker, addStickerMetadata } from '../../lib/animatedSticker.js'
+import { getSavedStickerName } from './setname.js'
 import type { ParsedMessage, CommandContext, MediaDownloadResult } from '../../core/types.js'
 
-const handler = async (m: ParsedMessage, { sock, args }: CommandContext) => {
+const handler = async (m: ParsedMessage, { sock, args, db }: CommandContext) => {
   try {
+    // Resolve pack/author: per-sticker args override the saved !setname,
+    // which falls back to the default.
+    const saved = getSavedStickerName(db, m.sender)
+    const rawArgs = args.join(' ').trim()
+    let pack = saved?.pack
+    let author = saved?.author
+    if (rawArgs) {
+      const parts = rawArgs.split(/[|,]/).map((s) => s.trim()).filter(Boolean)
+      pack = parts[0] || pack
+      author = parts[1] || author
+    }
+    pack = pack || 'Noah Bot'
+    author = author || 'Noah Bot'
+    const stickerId = Date.now().toString()
     // Check if media message or quoted message
     let mediaMsg: { type: string; download?: () => Promise<MediaDownloadResult | null> } | undefined
 
@@ -45,14 +60,17 @@ const handler = async (m: ParsedMessage, { sock, args }: CommandContext) => {
     // Create sticker
     let stickerBuffer: Buffer
     if (isAnimated) {
-      stickerBuffer = await makeAnimatedSticker(media.buffer, animExt)
+      const raw = await makeAnimatedSticker(media.buffer, animExt)
+      // The ffmpeg path never carried EXIF, so GIF stickers showed no
+      // pack name underneath — stamp it back in (animation is preserved).
+      stickerBuffer = await addStickerMetadata(raw, { id: stickerId, pack, author })
     } else {
       const stickerOptions = {
-        pack: args[0] || 'Noah Bot',
-        author: args[1] || 'Noah Bot',
+        pack,
+        author,
         type: 'default',
         categories: ['🌸', '⚔️'],
-        id: Date.now().toString(),
+        id: stickerId,
         quality: 70
       }
 
