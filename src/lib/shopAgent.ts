@@ -257,6 +257,11 @@ function sizesRegex(biz: BusinessConfig): RegExp | null {
   return new RegExp(`\\b(${parts.join('|')})\\b`)
 }
 
+/** Preset-line override: per-business wording, with engine default fallback. */
+function presetLine(biz: BusinessConfig, k: string, dflt: string): string {
+  return (biz.preset?.[k] as string) ?? dflt
+}
+
 export function presetBrain(biz: BusinessConfig, rawText: string, st: ChatState): IntentHit {
   const p = biz.preset || {}
   const t = rawText.toLowerCase().trim()
@@ -442,7 +447,7 @@ export async function handleShopMessage(m: ParsedMessage, sock: WASocket, defaul
         console.log(`[shopagent:${bizId}] transcribed: ${heard}`)
         text = heard
       } else {
-        const fb = 'Voice note mil gaya sir! Transcription filhal available nahi — likh kar bhej dein, foran jawab dunga.'
+        const fb = presetLine(biz, 'voiceFailLine', 'Voice note mil gaya sir! Transcription filhal available nahi — likh kar bhej dein, foran jawab dunga.')
         await sock.sendMessage(chat, { text: fb }, { quoted: m.message } as never)
         await sendVoiceNote(sock, chat, fb, m.message, getVoiceId(biz))
         return
@@ -470,7 +475,7 @@ export async function handleShopMessage(m: ParsedMessage, sock: WASocket, defaul
   }
   // --- demo menu (agency showcase)
   else if (biz.demoMenu && DEMO_RE.test(text)) {
-    reply = [
+    reply = presetLine(biz, 'demoMenuText', [
       `Yeh sab try kar sakte hain sir:`,
       `1. Catalogue — "catalogue" likhein`,
       `2. Price maloom karein — koi bhi sawal poochein`,
@@ -479,7 +484,7 @@ export async function handleShopMessage(m: ParsedMessage, sock: WASocket, defaul
       `5. Voice note bhejein — jawab voice me milega`,
       ``,
       `Har feature aapke business ke liye tayyar ho sakta hai.`,
-    ].join('\n')
+    ].join('\n'))!
   }
   // --- lead capture follow-up
   else if (st.awaitingLead) {
@@ -488,7 +493,7 @@ export async function handleShopMessage(m: ParsedMessage, sock: WASocket, defaul
     const need = st.history.length ? st.history[st.history.length - 1].text.slice(0, 200) : text.slice(0, 200)
     await sync.pushLead(bizId, { name: pushName || text.slice(0, 60), phone, need, source: 'bot' })
     await notifyOwner(sock, biz, `new lead: ${pushName} (${phone}) — ${need.slice(0, 120)}`)
-    reply = 'Shukriya sir! Owner aap se jald rabta karein ge.'
+    reply = presetLine(biz, 'leadThanksLine', 'Shukriya sir! Owner aap se jald rabta karein ge.')!
   }
   // --- appointment booking
   else if (BOOK_RE.test(text) || st.awaitingSlot) {
@@ -496,10 +501,10 @@ export async function handleShopMessage(m: ParsedMessage, sock: WASocket, defaul
       st.awaitingSlot = false
       await sync.pushAppointment(bizId, { customer_phone: phone, customer_name: pushName || undefined, slot_text: text.slice(0, 120) })
       await notifyOwner(sock, biz, `appointment request: ${pushName} (${phone}) — "${text.slice(0, 100)}"`)
-      reply = `Appointment request note kar li sir (${text.slice(0, 60)}). Owner confirm karke batayein ge.`
+      reply = tmpl(presetLine(biz, 'bookingDoneLine', 'Appointment request note kar li sir ({slot}). Owner confirm karke batayein ge.'), { slot: text.slice(0, 60) })
     } else {
       st.awaitingSlot = true
-      reply = 'Zaroor sir! Kis din aur time chahiye?'
+      reply = presetLine(biz, 'bookingAskLine', 'Zaroor sir! Kis din aur time chahiye?')!
     }
   }
   // --- cart / checkout
@@ -553,21 +558,30 @@ export async function handleShopMessage(m: ParsedMessage, sock: WASocket, defaul
   if (afterHours) {
     const open = biz.hours?.open || ''
     const close = biz.hours?.close || ''
-    reply = `${reply}\n\nNote: hum is waqt band hain (${open}–${close}). Subah owner khud jawab dein ge.`
+    reply = `${reply}\n\n${tmpl(presetLine(biz, 'afterHoursLine', 'Note: hum is waqt band hain ({open}–{close}). Subah owner khud jawab dein ge.'), { open, close })}`
     await sync.pushLead(bizId, { name: pushName || phone, phone, need: `after-hours: ${text.slice(0, 200)}`, source: 'bot' })
   }
 
   // Review collector: warm thanks -> ask for a review
   if (/\b(shukriya|thanks|thank you|bohat (ach|khoob)|great|awesome)\b/i.test(text) && biz.reviewLink) {
-    reply = `${reply}\n\nKhushi hui sir! Agar waqt ho to Google par review de dein: ${biz.reviewLink}`
+    reply = `${reply}\n\n${tmpl(presetLine(biz, 'reviewAskLine', 'Khushi hui sir! Agar waqt ho to Google par review de dein: {link}'), { link: biz.reviewLink })}`
   }
 
+  const isFirstContact = st.history.length === 0
   st.history.push({ role: 'user', text: text.slice(0, 500) }, { role: 'assistant', text: reply.slice(0, 500) })
   const maxTurns = (biz.brain?.maxTurns ?? 12) * 2
   if (st.history.length > maxTurns) st.history = st.history.slice(-maxTurns)
   saveState(s)
 
-  await sock.sendMessage(chat, { text: reply }, { quoted: m.message } as never)
+  // Welcome image: first contact gets the business's brand image with the greeting as caption
+  const welcomePath = isFirstContact && biz.welcomeImage ? path.join(REPO_ROOT, biz.welcomeImage) : ''
+  if (welcomePath && fs.existsSync(welcomePath)) {
+    await sock.sendMessage(chat,
+      { image: fs.readFileSync(welcomePath), caption: reply } as never,
+      { quoted: m.message } as never).catch(() => sock.sendMessage(chat, { text: reply }, { quoted: m.message } as never))
+  } else {
+    await sock.sendMessage(chat, { text: reply }, { quoted: m.message } as never)
+  }
   const minChars = biz.voice?.minCharsForVoiceNote ?? 25
   if (stripFormat(reply).length > minChars) {
     await sendVoiceNote(sock, chat, reply, m.message, getVoiceId(biz))
@@ -594,7 +608,7 @@ export async function sendDueNudges(sock: WASocket): Promise<number> {
       st.nudgeSent = true
       try {
         const chat = b.chats.find(c => digitsOf(c) === key) || `${key}@s.whatsapp.net`
-        await sock.sendMessage(chat, { text: 'Assalamualaikum sir! Kal baat adhuri reh gayi thi — koi madad chahiye to batayein.' })
+        await sock.sendMessage(chat, { text: (biz.preset?.nudgeLine as string) || 'Assalamualaikum sir! Kal baat adhuri reh gayi thi — koi madad chahiye to batayein.' })
         sent += 1
         await new Promise(r => setTimeout(r, 2000))
       } catch (e) {

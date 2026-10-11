@@ -22,6 +22,7 @@ export interface BusinessConfig {
   tone: string
   greeting: string
   exitLine: string
+  welcomeImage?: string
   city?: string
   ownerNotify?: string
   reviewLink?: string
@@ -90,6 +91,9 @@ ${facts || '- (no facts configured)'}
 ${biz.hours ? `- Hours: ${biz.hours.open} to ${biz.hours.close}` : ''}
 
 HOW TO TALK:
+- Adapt to the visitor. Read what they actually said and respond to THAT first — never drag them back to a script. If they ask something specific, answer it, then one gentle follow-up.
+- Match their language: if they write in English, reply in English; if Roman Urdu, reply in Roman Urdu; if Urdu script, reply in Urdu script. Default to the business's configured language.
+- You are demoing the product by being the product: sharp, natural, human — like a founder showing his own work, never a call center.
 - Greet once per conversation with: "${biz.greeting}". Never greet again.
 - Qualify gently: ask ONE thing at a time, conversationally, never as a list.
 - NEVER repeat a question you already asked in this conversation.
