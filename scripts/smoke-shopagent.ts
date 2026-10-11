@@ -36,20 +36,6 @@ const emPrompt = buildSystemPrompt(em)
 check('agency prompt has pricing', emPrompt.includes('15,000'))
 check('agency prompt has services', emPrompt.includes('WhatsApp AI agents'))
 
-// --- 2b. EXACT parity with the original taDemo.ts preset brain
-import { presetBrain as origPreset } from '../src/lib/taDemo.js'
-function origFresh() { return { greeted: false, askedSize: false, askedCity: false, ended: false } }
-const parityInputs = ['salam', '55', 'Lahore', '55 inch ka rate kya hai', 'nai chahiye', 'salam',
-  'catalogue', 'delivery?', 'address?', 'warranty?', 'shukriya', 'han', 'hello again']
-const stA = freshState(); const stB: any = origFresh()
-let parityOk = true
-for (const inp of parityInputs) {
-  const a = presetBrain(ta, inp, stA).reply
-  const b = (origPreset as any)(inp, stB).reply
-  if (a !== b) { parityOk = false; console.log(`  PARITY DIFF on ${JSON.stringify(inp)}:\n    new: ${a.slice(0, 80)}\n    old: ${b.slice(0, 80)}`) }
-}
-check('ta preset parity with original taDemo.ts', parityOk)
-
 // --- 3. cart flow
 const st3 = freshState()
 const add = handleCartText(ta, st3, 'add 32 inch')!

@@ -119,12 +119,16 @@ export async function handleMessage(message: WAMessage, sock: WASocket, db: Data
     return
   }
 
-  // ShopAgent: flagged DM chats get business-bot replies (AI brain + Fish
-  // Audio voice note + catalogue) for every non-command message.
+  // ShopAgent: business-bot replies (AI brain + Fish Audio voice note +
+  // catalogue) for every non-command DM. When DEFAULT_SHOP_BIZ is set
+  // (e.g. the agency number), every DM gets that business's brain;
+  // otherwise only chats flagged via `!shop on <biz>` are handled.
   if (!m.isGroup && !m.fromMe) {
     const { isShopChat, handleShopMessage } = await import('../lib/shopAgent.js')
-    if (isShopChat(m.chat, m.sender) && !(m.body && m.body.startsWith(global.prefix || '!'))) {
-      await handleShopMessage(m, sock).catch(e => console.error('[shopagent] handler error:', e))
+    const defaultBiz = process.env.DEFAULT_SHOP_BIZ || ''
+    const isCmd = !!(m.body && m.body.startsWith(global.prefix || '!'))
+    if (!isCmd && (defaultBiz || isShopChat(m.chat, m.sender))) {
+      await handleShopMessage(m, sock, defaultBiz || 'elevate-mavens').catch(e => console.error('[shopagent] handler error:', e))
       return
     }
   }
