@@ -23,6 +23,15 @@ export interface BusinessConfig {
   greeting: string
   exitLine: string
   welcomeImage?: string
+  safety?: {
+    dailyProactiveCap?: number
+    broadcastMax?: number
+    broadcastCooldownHrs?: number
+    replyDelayMinMs?: number
+    replyDelayMaxMs?: number
+    broadcastDelayMinMs?: number
+    broadcastDelayMaxMs?: number
+  }
   city?: string
   ownerNotify?: string
   reviewLink?: string

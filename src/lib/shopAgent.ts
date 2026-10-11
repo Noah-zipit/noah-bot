@@ -52,8 +52,45 @@ export interface ChatState {
   checkoutPending: boolean
   urduScript: boolean
 }
-interface BizState { chats: string[]; states: Record<string, ChatState>; voiceId?: string }
+interface BizState {
+  chats: string[]
+  states: Record<string, ChatState>
+  voiceId?: string
+  safety?: { day: string; proactiveSent: number; lastBroadcastAt: number }
+}
 interface ShopState { businesses: Record<string, BizState>; migratedTaDemo?: boolean }
+
+/** Safe mode: ban-risk limits. Replies to inbound messages are never
+ *  capped (the product must answer customers); proactive sends
+ *  (broadcasts, nudges) are. Overridable per business via config.safety. */
+const DEFAULT_SAFETY = {
+  dailyProactiveCap: 150, // max proactive sends per business per day
+  broadcastMax: 30, // max recipients per broadcast
+  broadcastCooldownHrs: 24, // min hours between broadcasts per business
+  replyDelayMinMs: 1200, // human-like pause before replies
+  replyDelayMaxMs: 2800,
+  broadcastDelayMinMs: 3000, // human-like pacing between broadcast sends
+  broadcastDelayMaxMs: 8000,
+}
+
+function safetyOf(biz: BusinessConfig): typeof DEFAULT_SAFETY {
+  return { ...DEFAULT_SAFETY, ...biz.safety }
+}
+
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function safetyState(b: BizState): NonNullable<BizState['safety']> {
+  const today = todayStr()
+  if (!b.safety || b.safety.day !== today) {
+    b.safety = { day: today, proactiveSent: 0, lastBroadcastAt: b.safety?.lastBroadcastAt || 0 }
+  }
+  return b.safety
+}
+
+const randMs = (min: number, max: number) => min + Math.random() * (max - min)
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 function freshChatState(): ChatState {
   return {
@@ -573,6 +610,12 @@ export async function handleShopMessage(m: ParsedMessage, sock: WASocket, defaul
   if (st.history.length > maxTurns) st.history = st.history.slice(-maxTurns)
   saveState(s)
 
+  // Human pacing: typing indicator + natural pause before replying
+  const lim = safetyOf(biz)
+  await sock.sendPresenceUpdate('composing', chat).catch(() => {})
+  await sleep(randMs(lim.replyDelayMinMs, lim.replyDelayMaxMs))
+  await sock.sendPresenceUpdate('paused', chat).catch(() => {})
+
   // Welcome image: first contact gets the business's brand image with the greeting as caption
   const welcomePath = isFirstContact && biz.welcomeImage ? path.join(REPO_ROOT, biz.welcomeImage) : ''
   if (welcomePath && fs.existsSync(welcomePath)) {
@@ -600,17 +643,26 @@ export async function sendDueNudges(sock: WASocket): Promise<number> {
   for (const [bizId, b] of Object.entries(s.businesses)) {
     const biz = sync.getBusinessConfig(bizId) || loadBusiness(bizId)
     if (!biz || biz.nudges !== true) continue
+    const lim = safetyOf(biz)
+    const safe = safetyState(b)
     for (const [key, st] of Object.entries(b.states)) {
       if (st.nudgeSent || st.ended || !st.greeted) continue
       const midFlow = st.qualifier || st.cart.length > 0 || st.awaitingSlot || st.checkoutPending
       if (!midFlow) continue
       if (now - st.lastActive < 24 * 3600 * 1000) continue
+      if (safe.proactiveSent >= lim.dailyProactiveCap) {
+        console.log(`[shopagent] nudges for ${bizId} paused by daily cap`)
+        break
+      }
       st.nudgeSent = true
       try {
         const chat = b.chats.find(c => digitsOf(c) === key) || `${key}@s.whatsapp.net`
+        await sock.sendPresenceUpdate('composing', chat).catch(() => {})
+        await sleep(randMs(800, 2000))
         await sock.sendMessage(chat, { text: (biz.preset?.nudgeLine as string) || 'Assalamualaikum sir! Kal baat adhuri reh gayi thi — koi madad chahiye to batayein.' })
         sent += 1
-        await new Promise(r => setTimeout(r, 2000))
+        safe.proactiveSent += 1
+        await sleep(randMs(lim.broadcastDelayMinMs, lim.broadcastDelayMaxMs))
       } catch (e) {
         console.error('[shopagent] nudge failed:', (e as Error).message)
       }
@@ -625,21 +677,44 @@ export async function runBroadcast(sock: WASocket, bizId: string, text: string):
   const s = loadState()
   const b = s.businesses[bizId]
   if (!b) return 0
+  const biz = sync.getBusinessConfig(bizId) || loadBusiness(bizId)
+  const lim = safetyOf(biz || { id: bizId } as BusinessConfig)
+  const safe = safetyState(b)
   const now = Date.now()
+
+  // Cooldown: one broadcast per business per cooldown window
+  const cooldownMs = lim.broadcastCooldownHrs * 3600 * 1000
+  if (now - safe.lastBroadcastAt < cooldownMs) {
+    const hrs = Math.ceil((cooldownMs - (now - safe.lastBroadcastAt)) / 3600000)
+    console.log(`[shopagent] broadcast for ${bizId} blocked by cooldown (${hrs}h left)`)
+    return 0
+  }
+  // Daily proactive cap
+  if (safe.proactiveSent >= lim.dailyProactiveCap) {
+    console.log(`[shopagent] broadcast for ${bizId} blocked by daily cap`)
+    return 0
+  }
+
   const targets = b.chats.filter(c => {
     const st = b.states[digitsOf(c)]
     return st && !st.ended && now - st.lastActive < 30 * 24 * 3600 * 1000
-  }).slice(0, 30)
+  }).slice(0, Math.min(lim.broadcastMax, lim.dailyProactiveCap - safe.proactiveSent))
   let sent = 0
   for (const c of targets) {
     try {
+      await sock.sendPresenceUpdate('composing', c).catch(() => {})
+      await sleep(randMs(800, 2000))
       await sock.sendMessage(c, { text })
       sent += 1
-      await new Promise(r => setTimeout(r, 2000))
+      safe.proactiveSent += 1
+      saveState(s)
+      await sleep(randMs(lim.broadcastDelayMinMs, lim.broadcastDelayMaxMs))
     } catch (e) {
       console.error('[shopagent] broadcast send failed:', (e as Error).message)
     }
   }
+  safe.lastBroadcastAt = now
+  saveState(s)
   await sync.recordBroadcast(bizId, text, sent)
   return sent
 }
