@@ -254,6 +254,19 @@ async function init(): Promise<void> {
     }
   }, 3600000)
 
+  // ShopAgent: dashboard-queued broadcasts (owner + agency-wide), every 2 min
+  setInterval(async () => {
+    const sock = sockHolder.current
+    if (!sock) return
+    try {
+      const { processQueuedBroadcasts } = await import('./lib/shopAgent.js')
+      const n = await processQueuedBroadcasts(sock)
+      if (n) console.log(`[shopagent] processed ${n} queued broadcast(s)`)
+    } catch (e) {
+      console.error('[shopagent] broadcast sweep failed:', (e as Error).message)
+    }
+  }, 120000)
+
   // Clean temporary files every hour
   setInterval(cleanTmp, 3600000)
 

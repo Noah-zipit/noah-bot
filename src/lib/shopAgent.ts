@@ -643,3 +643,28 @@ export async function runBroadcast(sock: WASocket, bizId: string, text: string):
   await sync.recordBroadcast(bizId, text, sent)
   return sent
 }
+
+/**
+ * Agency/owner broadcast loop: sends every queued dashboard broadcast
+ * through the bot, then marks it sent. Called on an interval.
+ */
+export async function processQueuedBroadcasts(sock: WASocket): Promise<number> {
+  const queued = await sync.fetchQueuedBroadcasts()
+  let done = 0
+  for (const q of queued) {
+    if (!sync.botEnabled(q.business_id)) {
+      await sync.markBroadcastSent(q.id, 0)
+      continue
+    }
+    try {
+      const sent = await runBroadcast(sock, q.business_id, q.message)
+      await sync.markBroadcastSent(q.id, sent)
+      console.log(`[shopagent] broadcast ${q.id} -> ${q.business_id}: ${sent} sent`)
+      done += 1
+    } catch (e) {
+      console.error('[shopagent] queued broadcast failed:', (e as Error).message)
+    }
+    await new Promise(r => setTimeout(r, 3000))
+  }
+  return done
+}

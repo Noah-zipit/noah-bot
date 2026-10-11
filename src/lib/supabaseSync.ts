@@ -237,6 +237,37 @@ export async function recordBroadcast(bizId: string, message: string, audience: 
   }
 }
 
+export interface QueuedBroadcast {
+  id: string
+  business_id: string
+  message: string
+}
+
+/** Fetch broadcasts queued from the dashboard (owner or agency-wide). */
+export async function fetchQueuedBroadcasts(): Promise<QueuedBroadcast[]> {
+  if (!creds()) return []
+  try {
+    const rows = (await req(
+      'GET',
+      'broadcasts?select=id,business_id,message&status=eq.queued&order=created_at.asc&limit=20',
+    )) as QueuedBroadcast[] | null
+    return rows || []
+  } catch (e) {
+    console.error('[supasync] fetchQueuedBroadcasts failed:', (e as Error).message)
+    return []
+  }
+}
+
+/** Mark a queued broadcast sent with its audience size. */
+export async function markBroadcastSent(id: string, audience: number): Promise<void> {
+  if (!creds()) return
+  try {
+    await req('PATCH', `broadcasts?id=eq.${id}`, { status: 'sent', audience_count: audience })
+  } catch (e) {
+    console.error('[supasync] markBroadcastSent failed:', (e as Error).message)
+  }
+}
+
 /** Store an unanswered question so the owner can teach the bot once. */
 export async function learnFaq(bizId: string, question: string): Promise<void> {
   if (!creds()) return
