@@ -29,13 +29,21 @@ const handler = async (m: ParsedMessage, _ctx: CommandContext) => {
       await m.reply(`Unknown business \`${bizId}\`. Use *!shop list*.`)
       return
     }
-    setShopChat(bizId, m.chat, true)
-    await m.reply(`*${bizName(bizId)}* agent ON for this chat.\n\nHar message ka jawab ab shop bot dega. Band karne ke liye: *!shop off*`)
+    // Optional phone arg: flag someone else's chat (e.g. a prospect's)
+    // Usage: !shop on <biz> 923001234567
+    const phoneArg = (m.args[2] || '').replace(/\D/g, '')
+    const targetChat = phoneArg ? `${phoneArg}@s.whatsapp.net` : m.chat
+    setShopChat(bizId, targetChat, true)
+    await m.reply(
+      `*${bizName(bizId)}* agent ON for ${phoneArg ? `\`${phoneArg}\`` : 'this chat'}.\n\nBand karne ke liye: *!shop off*${phoneArg ? ` (or *!shop off ${phoneArg}*)` : ''}`
+    )
     return
   }
 
   if (sub === 'off') {
-    const off = setShopChatOffEverywhere(m.chat)
+    const phoneArg = (m.args[1] || '').replace(/\D/g, '')
+    const targetChat = phoneArg ? `${phoneArg}@s.whatsapp.net` : m.chat
+    const off = setShopChatOffEverywhere(targetChat)
     await m.reply(off.length ? `Shop agent OFF for this chat (${off.join(', ')}).` : 'Is chat me koi shop agent on nahi tha.')
     return
   }
@@ -55,7 +63,7 @@ const handler = async (m: ParsedMessage, _ctx: CommandContext) => {
     return
   }
 
-  await m.reply(`*ShopAgent*\n\nUsage:\n*!shop list* — businesses\n*!shop on <biz>* — enable here\n*!shop off* — disable here\n*!shop status* — this chat + counts\n*!shop voice <biz> <id>* — set voice`)
+  await m.reply(`*ShopAgent*\n\nUsage:\n*!shop list* — businesses\n*!shop on <biz>* — enable here\n*!shop on <biz> <phone>* — enable for someone's chat\n*!shop off* — disable here\n*!shop off <phone>* — disable for someone's chat\n*!shop status* — this chat + counts\n*!shop voice <biz> <id>* — set voice`)
 }
 
 export default {
