@@ -233,6 +233,27 @@ async function init(): Promise<void> {
   // AI bridge: deliver assistant answers for !ai queries back to WhatsApp
   startAiBridge(() => sockHolder.current)
 
+  // ShopAgent: pull business configs + bot_enabled toggles from Supabase (no-op in local mode)
+  try {
+    const sync = await import('./lib/supabaseSync.js')
+    sync.startPolling()
+  } catch (err) {
+    console.error('ShopAgent sync failed to start (continuing in local mode):', err)
+  }
+
+  // ShopAgent: gentle 24h follow-up nudges for stalled customer chats
+  setInterval(async () => {
+    const sock = sockHolder.current
+    if (!sock) return
+    try {
+      const { sendDueNudges } = await import('./lib/shopAgent.js')
+      const n = await sendDueNudges(sock)
+      if (n) console.log(`[shopagent] sent ${n} follow-up nudge(s)`)
+    } catch (e) {
+      console.error('[shopagent] nudge sweep failed:', (e as Error).message)
+    }
+  }, 3600000)
+
   // Clean temporary files every hour
   setInterval(cleanTmp, 3600000)
 

@@ -119,12 +119,12 @@ export async function handleMessage(message: WAMessage, sock: WASocket, db: Data
     return
   }
 
-  // T&A Electronics demo mode: flagged DM chats get shop-bot replies
-  // (text + Fish Audio voice note + catalogue) for every non-command message.
+  // ShopAgent: flagged DM chats get business-bot replies (AI brain + Fish
+  // Audio voice note + catalogue) for every non-command message.
   if (!m.isGroup && !m.fromMe) {
-    const { isTaDemoChat, handleTaDemoMessage } = await import('../lib/taDemo.js')
-    if (isTaDemoChat(m.chat, m.sender) && !(m.body && m.body.startsWith(global.prefix || '!'))) {
-      await handleTaDemoMessage(m, sock).catch(e => console.error('[tademo] handler error:', e))
+    const { isShopChat, handleShopMessage } = await import('../lib/shopAgent.js')
+    if (isShopChat(m.chat, m.sender) && !(m.body && m.body.startsWith(global.prefix || '!'))) {
+      await handleShopMessage(m, sock).catch(e => console.error('[shopagent] handler error:', e))
       return
     }
   }
