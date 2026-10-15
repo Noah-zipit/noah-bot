@@ -1,5 +1,5 @@
 // src/lib/shopBrain.ts — conversational brain for ShopAgent businesses.
-// Provider chain: Anthropic (Claude) -> NVIDIA NIM -> null (caller falls back
+// Provider chain: NVIDIA NIM -> Groq -> Anthropic -> null (caller falls back
 // to the config-driven preset brain). The system prompt is built ONLY from the
 // business config: the brain may never invent prices, sizes, addresses or facts.
 import fs from 'node:fs'
@@ -116,6 +116,7 @@ HOW TO TALK:
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
 const NIM_URL = 'https://integrate.api.nvidia.com/v1/chat/completions'
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 
 async function callAnthropic(biz: BusinessConfig, history: Turn[], userText: string): Promise<string | null> {
   const key = process.env.ANTHROPIC_API_KEY
@@ -200,6 +201,45 @@ async function callNim(biz: BusinessConfig, history: Turn[], userText: string): 
   }
 }
 
+async function callGroq(biz: BusinessConfig, history: Turn[], userText: string): Promise<string | null> {
+  const key = process.env.GROQ_API_KEY
+  if (!key) return null
+  const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'
+  const messages = [
+    { role: 'system', content: buildSystemPrompt(biz) },
+    ...history.slice(-(biz.brain?.maxTurns ?? 12)).map(t => ({
+      role: t.role === 'assistant' ? 'assistant' : 'user',
+      content: t.text.slice(0, 800),
+    })),
+    { role: 'user', content: userText.slice(0, 800) },
+  ]
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 25000)
+    const res = await fetch(GROQ_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: biz.brain?.maxTokens ?? 200,
+        temperature: biz.brain?.temperature ?? 0.7,
+      }),
+      signal: ctrl.signal,
+    })
+    clearTimeout(timer)
+    if (!res.ok) {
+      console.error('[shopbrain] groq http', res.status)
+      return null
+    }
+    const d = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+    return d.choices?.[0]?.message?.content?.trim() || null
+  } catch (e) {
+    console.error('[shopbrain] groq failed:', (e as Error).message)
+    return null
+  }
+}
+
 /**
  * Try the provider chain. Returns the reply text, or null when no provider
  * answered (caller should use the preset brain fallback).
@@ -210,14 +250,20 @@ export async function brainAnswer(
   userText: string,
 ): Promise<string | null> {
   const provider = (biz.brain?.provider || 'auto').toLowerCase()
+  if (provider === 'auto' || provider === 'nim') {
+    const n = await callNim(biz, history, userText)
+    if (n) return n
+    if (provider === 'nim') return null
+  }
+  if (provider === 'auto' || provider === 'groq') {
+    const g = await callGroq(biz, history, userText)
+    if (g) return g
+    if (provider === 'groq') return null
+  }
   if (provider === 'auto' || provider === 'anthropic') {
     const a = await callAnthropic(biz, history, userText)
     if (a) return a
     if (provider === 'anthropic') return null
-  }
-  if (provider === 'auto' || provider === 'nim') {
-    const n = await callNim(biz, history, userText)
-    if (n) return n
   }
   return null
 }
