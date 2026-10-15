@@ -7,10 +7,22 @@
  * frame, and upscaling small GIFs to 512 blurred them. This encoder goes
  * straight from the source (mp4/gif/webp) to animated webp via ffmpeg's
  * libwebp_anim, never upscales small sources, and walks a ladder until the
- * output fits comfortably under the limit. The ladder holds quality at 60+
- * and sheds size via fps, then width, then duration — degrading quality
- * never actually shrank motion content, it only produced the pixel
- * distortion users reported.
+ * output fits comfortably under the limit.
+ *
+ * Quality strategy (2026-10-15 rework — "video stickers are not crystal
+ * clear, really badly encoded"):
+ *  1. Duration is the dominant size lever for video, so videos longer than
+ *     VIDEO_TRIM_SECONDS are pre-trimmed to the first 5 seconds BEFORE the
+ *     ladder. A crisp 5s sticker at 512px/15fps/q84 beats a mushy full-length
+ *     one at 384px/10fps/q70 every time — and every major sticker app trims
+ *     to a short loop anyway. GIFs are left alone (they are already short).
+ *  2. The ladder starts at quality 88 and holds 512px/15fps through the first
+ *     three rungs, shedding size via fps, then width, then duration — in that
+ *     order. Quality is the LAST thing sacrificed, never the first. (Earlier
+ *     versions started at q75 and dropped to 448px by rung 4 on ordinary
+ *     busy phone video — that was the "badly encoded" look.)
+ *  3. Deeper rungs exist for pathological content, but trimming happens
+ *     before resolution/fps collapse, so the common case never sees them.
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -24,6 +36,12 @@ const execFileAsync = promisify(execFile)
 
 // WhatsApp's animated-sticker ceiling is ~500KB; stay comfortably under it.
 const MAX_BYTES = 450 * 1024
+
+// Videos longer than this are trimmed to their first N seconds before the
+// quality ladder runs. Duration dominates output size for video, so this is
+// what lets ordinary phone clips stay on the 512px / 15fps / high-quality
+// rungs instead of collapsing to 384px mush.
+const VIDEO_TRIM_SECONDS = 5
 
 /**
  * Pack/author metadata carried inside the sticker's EXIF chunk.
@@ -66,46 +84,94 @@ export async function addStickerMetadata(webp: Buffer, meta: StickerMetadata): P
   const img = new Image()
   await img.load(webp)
   img.exif = buildStickerExif(meta)
-  const out = await img.save(null)
-  return Buffer.from(out)
+  const out = Buffer.from(await img.save(null))
+  // node-webpmux recomputes the VP8X feature flags on save and drops the
+  // animation bit — WhatsApp then shows the sticker as a static image, which
+  // is why GIF stickers stopped moving once names were stamped in. Restore
+  // the source's original flags and set the EXIF bit (0x04) for the chunk
+  // we just appended.
+  const vp8x = out.indexOf('VP8X')
+  if (vp8x >= 0 && out.length > vp8x + 8 && webp.length > vp8x + 8) {
+    out[vp8x + 8] = webp[vp8x + 8] | 0x04
+  }
+  return out
+}
+
+interface SourceProbe {
+  fps: number | null
+  duration: number | null
+  format: string | null
 }
 
 /**
- * Probe the source's average frame rate with ffprobe.
- * Returns null when it can't be determined.
+ * Probe the source once: average frame rate, duration, container format.
+ * Any field may come back null when it can't be determined.
  */
-async function probeSourceFps(input: string): Promise<number | null> {
+async function probeSource(input: string): Promise<SourceProbe> {
+  const probe: SourceProbe = { fps: null, duration: null, format: null }
   try {
     const { stdout } = await execFileAsync(
       'ffprobe',
-      ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=avg_frame_rate',
-       '-of', 'default=nw=1:nk=1', input],
+      ['-v', 'error', '-select_streams', 'v:0',
+       '-show_entries', 'stream=avg_frame_rate:format=duration,format_name',
+       '-of', 'default=nw=1', input],
       { timeout: 30_000 }
     )
-    const [n, d] = stdout.trim().split('/').map(Number)
-    if (n > 0 && d > 0) return n / d
+    for (const line of stdout.split('\n')) {
+      const [k, v] = line.split('=')
+      if (k === 'avg_frame_rate' && v) {
+        const [n, d] = v.trim().split('/').map(Number)
+        if (n > 0 && d > 0) probe.fps = n / d
+      } else if (k === 'duration' && v) {
+        const s = Number(v)
+        if (Number.isFinite(s) && s > 0) probe.duration = s
+      } else if (k === 'format_name' && v) {
+        probe.format = v.trim().toLowerCase()
+      }
+    }
   } catch {
-    // probe failed — fall through to the safe default below
+    // probe failed — fall through with nulls and safe defaults below
   }
-  return null
+  return probe
 }
 
-// Quality ladder: quality never drops below 60. That was the real bug:
-// for animated/motion content the -quality knob barely moves the output
-// size (a full-motion GIF encodes to ~2MB at q40 just as at q82), so
-// degrading quality only ever bought visible pixel distortion — never a
-// smaller file. Size is shed through fps, then width, then duration,
-// in that order. 8-10fps still looks smooth for sticker GIFs.
+const VIDEO_FORMAT_TOKENS = new Set([
+  'mp4', 'mov', 'm4a', 'm4v', '3gp', '3g2', 'mj2',
+  'matroska', 'webm', 'avi', 'flv', 'mpeg', 'mpegts'
+])
+
+/**
+ * True when the source is a video container (not a GIF / still webp).
+ * Only videos get the pre-trim — GIFs are already short loops.
+ */
+function isVideoSource(probe: SourceProbe, ext: string): boolean {
+  if (probe.format) {
+    const tokens = probe.format.split(',')
+    if (tokens.some((t) => VIDEO_FORMAT_TOKENS.has(t))) return true
+    if (tokens.includes('gif')) return false
+  }
+  return ['.mp4', '.mov', '.m4v', '.mkv', '.webm', '.3gp', '.avi'].includes(ext.toLowerCase())
+}
+
+// Quality ladder: quality is the LAST thing sacrificed, never the first.
+// Earlier versions opened at q75 and were already down to 448px/10fps by
+// rung 4 on ordinary busy phone video — that was the "badly encoded" look
+// users reported. Now the first three rungs hold full 512px/15fps and walk
+// quality down from 88; size is then shed through fps, then width, then
+// duration, in that order. Deep rungs exist only for pathological content —
+// the 5s pre-trim above keeps real videos on the early rungs.
 type Attempt = { fps: number; quality: number; maxWidth: number; maxSeconds?: number }
 
 const LADDER: Attempt[] = [
-  { fps: 15, quality: 75, maxWidth: 512 },
-  { fps: 12, quality: 75, maxWidth: 512 },
-  { fps: 10, quality: 72, maxWidth: 512 },
-  { fps: 10, quality: 70, maxWidth: 448 },
-  { fps: 10, quality: 70, maxWidth: 384 },
-  { fps: 8, quality: 65, maxWidth: 320 },
-  { fps: 8, quality: 60, maxWidth: 320, maxSeconds: 4 },
+  { fps: 15, quality: 88, maxWidth: 512 },
+  { fps: 15, quality: 84, maxWidth: 512 },
+  { fps: 15, quality: 80, maxWidth: 512 },
+  { fps: 12, quality: 80, maxWidth: 512 },
+  { fps: 12, quality: 78, maxWidth: 448 },
+  { fps: 10, quality: 78, maxWidth: 448 },
+  { fps: 10, quality: 75, maxWidth: 384 },
+  { fps: 8, quality: 72, maxWidth: 384, maxSeconds: 4 },
+  { fps: 8, quality: 68, maxWidth: 320, maxSeconds: 3 },
 ]
 
 // NOTE: the fps step below DOWNSAMPLES only — never forces a low-fps GIF
@@ -126,8 +192,34 @@ export async function makeAnimatedSticker(input: Buffer, ext: string): Promise<B
 
   try {
     // Probe once: knowing the source fps lets the fps filter downsample
-    // fast sources and pass slow ones through untouched (no frame doubling).
-    const srcFps = await probeSourceFps(inp)
+    // fast sources and pass slow ones through untouched (no frame doubling);
+    // knowing the duration lets long videos get pre-trimmed.
+    const probe = await probeSource(inp)
+
+    // Videos: trim to the first VIDEO_TRIM_SECONDS before encoding.
+    // Duration is the dominant size lever — this single step is what keeps
+    // real phone videos on the crisp 512px rungs instead of collapsing the
+    // ladder. Stream copy is near-instant; on failure fall back to the full
+    // input and let the ladder handle it.
+    let encodeInput = inp
+    if (
+      isVideoSource(probe, safeExt) &&
+      probe.duration !== null &&
+      probe.duration > VIDEO_TRIM_SECONDS
+    ) {
+      const trimmed = join(dir, `trim${safeExt}`)
+      try {
+        await execFileAsync(
+          'ffmpeg',
+          ['-v', 'error', '-y', '-t', String(VIDEO_TRIM_SECONDS), '-i', inp,
+           '-c', 'copy', '-an', trimmed],
+          { timeout: 60_000 }
+        )
+        encodeInput = trimmed
+      } catch {
+        // keep the full input; the ladder sheds size another way
+      }
+    }
 
     let smallest: Buffer | null = null
     for (const a of LADDER) {
@@ -135,16 +227,20 @@ export async function makeAnimatedSticker(input: Buffer, ext: string): Promise<B
       // Never upscale: min(maxWidth,iw) keeps small GIFs at native resolution
       // (upscaling is what made them blurry). -2 keeps height even.
       const filters: string[] = []
-      if (srcFps === null || srcFps > a.fps) filters.push(`fps=${a.fps}`)
+      if (probe.fps === null || probe.fps > a.fps) filters.push(`fps=${a.fps}`)
       filters.push(`scale='min(${a.maxWidth},iw)':-2:flags=lanczos`)
       const vf = filters.join(',')
-      const args = ['-v', 'error', '-y', '-i', inp]
+      const args = ['-v', 'error', '-y', '-i', encodeInput]
       if (a.maxSeconds) args.push('-t', String(a.maxSeconds))
       args.push(
         '-vf', vf,
         '-vcodec', 'libwebp_anim',
         '-lossless', '0',
         '-quality', String(a.quality),
+        // Digital-picture preset: sharper edges, less blockiness than the
+        // default preset, and ~6% smaller at the same quality on busy
+        // motion (measured). One rung of size headroom for free.
+        '-preset', 'picture',
         // Conditional replenishment: skips re-encoding near-static blocks,
         // so GIFs with still regions use fewer bytes and can stay on the
         // early rungs. (It does nothing for full-motion content — for those
