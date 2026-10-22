@@ -5,8 +5,8 @@
 # Instance 2 example: ./run-prod.sh 3001 ./sessions2 ./data2
 # Each instance gets its own session dir, data dir, and web port, so
 # two WhatsApp numbers never share state.
-set -u
-cd "$(dirname "$0")"
+set -euo pipefail
+cd "$(dirname "$0")" || exit 1
 PORT="${1:-3000}"
 SESSION_DIR_ARG="${2:-./sessions}"
 DATA_DIR_ARG="${3:-./data}"
