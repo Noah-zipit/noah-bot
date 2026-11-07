@@ -1,5 +1,5 @@
 {
-  "author": "Noah",
+  "author": "Ashar Qaisar <noahext994@gmail.com>",
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "axios": "^1.6.2",
