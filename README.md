@@ -4,7 +4,7 @@ A WhatsApp bot built on [Baileys](https://github.com/WhiskeySockets/Baileys) (`7
 
 ## Features
 
-- 39 commands across 6 categories: basic, admin, group, fun, media, owner
+- 49 commands across 6 categories: basic, admin, group, fun, media, owner
 - Command prefix `!` (configurable via `PREFIX`)
 - Local JSON storage in `./data/` (`users.json`, `groups.json`, `settings.json`, `lidmap.json`) — no MongoDB
 - LID → phone-number identity resolution:
