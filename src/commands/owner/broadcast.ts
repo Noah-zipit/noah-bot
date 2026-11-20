@@ -1,5 +1,5 @@
 import type { ParsedMessage, CommandContext } from '../../core/types.js'
-import { runBroadcast, bizForChat, listShopChats } from '../../lib/shopAgent.js'
+import { runBroadcast } from '../../lib/shopAgent.js'
 import { getBusinessConfig } from '../../lib/supabaseSync.js'
 import { loadBusiness } from '../../lib/shopBrain.js'
 
