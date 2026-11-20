@@ -11,7 +11,6 @@ import type { WASocket } from '@whiskeysockets/baileys'
 import type { ParsedMessage } from '../core/types.js'
 import {
   loadBusiness,
-  buildSystemPrompt,
   brainAnswer,
   type BusinessConfig,
   type Turn,
